@@ -295,7 +295,13 @@ const resetSession = (userId) => {
 
 const simulateTyping = async (chat) => {
   await delay(CONFIG.delays.typing);
-  await chat.sendStateTyping();
+  try {
+    if (chat.sendStateTyping) {
+      await chat.sendStateTyping();
+    }
+  } catch (e) {
+    // Ignora erro de typing - não afeta o funcionamento
+  }
   await delay(CONFIG.delays.beforeSend);
 };
 
@@ -477,7 +483,12 @@ async function handleConversation(msg, chat, texto) {
         await sendMessage(msg, chat, MESSAGES.invalidOption);
         return;
       }
-      const contact = await msg.getContact();
+      let contact = null;
+      try {
+        contact = await msg.getContact();
+      } catch (e) {
+        // Ignora erro de getContact
+      }
       const finalData = { ...session.data, deadline: DEADLINE_OPTIONS[texto], phone: userId.split("@")[0] };
       updateSession(userId, {
         state: FLOW_STATES.FINISHED,
