@@ -1,0 +1,21 @@
+{
+  "name": "aithos-chatbot",
+  "version": "1.0.0",
+  "description": "Chatbot WhatsApp - Aithos Tech",
+  "main": "chatbot.js",
+  "scripts": {
+    "start": "node chatbot.js",
+    "dev": "node chatbot.js",
+    "pm2:start": "pm2 start chatbot.js --name aithos-bot",
+    "pm2:stop": "pm2 stop aithos-bot",
+    "pm2:restart": "pm2 restart aithos-bot",
+    "pm2:logs": "pm2 logs aithos-bot",
+    "pm2:status": "pm2 status"
+  },
+  "dependencies": {
+    "moment-timezone": "^0.5.45",
+    "openai": "^4.78.1",
+    "qrcode-terminal": "^0.12.0",
+    "whatsapp-web.js": "1.34.2"
+  }
+}
