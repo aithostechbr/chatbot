@@ -379,11 +379,19 @@ const sendMessage = async (msg, chat, text) => {
   stats.messagesSent++;
 };
 
-const notifyAttendant = async (name, phone, contact) => {
+const notifyAttendant = async (name, rawPhone, contact) => {
   try {
     const now = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
     const contactName = contact?.pushname || contact?.name || name;
-    const cleanPhone = phone.replace(/@c\.us$|@s\.whatsapp\.net$/i, "").replace(/\D/g, "").slice(-13);
+    
+    // Tentar pegar o número do contact primeiro, senão usar o rawPhone
+    let cleanPhone = contact?.number || contact?.id?.user || rawPhone.replace(/@.*$/, "");
+    cleanPhone = String(cleanPhone).replace(/\D/g, "");
+    
+    // Se o número for muito grande (ID interno), tentar extrair os últimos 11-13 dígitos
+    if (cleanPhone.length > 15) {
+      cleanPhone = cleanPhone.slice(-13);
+    }
     
     const attendantMessage = `
 🔔 *SOLICITAÇÃO DE ATENDENTE*
@@ -414,9 +422,16 @@ https://wa.me/${cleanPhone}
 const notifyAdmin = async (leadData, contact) => {
   try {
     const now = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
-    
-    const phoneNumber = leadData.phone;
     const contactName = contact?.pushname || contact?.name || leadData.name;
+    
+    // Tentar pegar o número do contact primeiro, senão usar o leadData.phone
+    let phoneNumber = contact?.number || contact?.id?.user || leadData.phone;
+    phoneNumber = String(phoneNumber).replace(/\D/g, "");
+    
+    // Se o número for muito grande (ID interno), tentar extrair os últimos 11-13 dígitos
+    if (phoneNumber.length > 15) {
+      phoneNumber = phoneNumber.slice(-13);
+    }
     
     const leadMessage = `
 🎯 *NOVO LEAD CAPTURADO!*
@@ -514,11 +529,10 @@ Perfeito, *${attendantName}*! 👋
 ✅ *Um de nossos atendentes foi notificado!*
 
 Aguarde alguns instantes que entraremos em contato.
-Nosso horário de atendimento é de *segunda a sexta, das 9h às 18h*.
 
 Se preferir, você também pode:
-• Ligar: (11) 99696-1151
-• E-mail: contato@aithostech.com
+
+• E-mail: contato@aithostech.com.br
 
 Obrigado pela paciência! 💙
       `.trim());
