@@ -5,7 +5,7 @@ const CONFIG = {
   delays: { typing: 1500, beforeSend: 1500 },
   triggerWords: /^(menu|oi|olá|ola|bom dia|boa tarde|boa noite|orçamento|orcamento|serviços|servicos|site|sistema|começar|comecar|iniciar)$/i,
   formLink: "https://aithostech.com/briefing",
-  adminNumber: "5511996961151@c.us",
+  adminNumber: ["5511996961151@c.us", "5511947813352@c.us", "5511968551256@c.us", "5511945402503@c.us"],
   cooldownMs: 30000,
   sessionTimeout: 600000,
   maxReconnectAttempts: 5,
@@ -25,10 +25,12 @@ const FLOW_STATES = {
   MENU: "menu",
   SERVICE_SELECTED: "service_selected",
   COLLECTING_NAME: "collecting_name",
+  COLLECTING_NAME_ATTENDANT: "collecting_name_attendant",
   COLLECTING_BUSINESS: "collecting_business",
   COLLECTING_DETAILS: "collecting_details",
   COLLECTING_BUDGET: "collecting_budget",
   COLLECTING_DEADLINE: "collecting_deadline",
+  WAITING_ATTENDANT: "waiting_attendant",
   FINISHED: "finished",
 };
 
@@ -38,6 +40,7 @@ const SERVICES = {
   "3": { name: "Produtos Digitais Criativos", emoji: "✨" },
   "4": { name: "Automação & Comunicação", emoji: "💬" },
   "5": { name: "Outro / Não sei ainda", emoji: "🤔" },
+  "6": { name: "Falar com atendente", emoji: "👤" },
 };
 
 const MESSAGES = {
@@ -64,9 +67,12 @@ Para começar, *digite o número* da área que mais te interessa:
 
 🤔 *5.* Outro / Não sei ainda
    _Me conta sua ideia que ajudo!_
+
+👤 *6.* Falar com atendente
+   _Atendimento humano_
 ━━━━━━━━━━━━━━━━━━
 
-📝 *Responda com o número (1, 2, 3, 4 ou 5)*
+📝 *Responda com o número (1 a 6)*
   `.trim(),
 
   serviceDetails: {
@@ -145,6 +151,15 @@ Trabalhamos com projetos personalizados.
 Conta pra mim sua ideia que vamos encontrar a melhor solução!
 
 Para seguirmos, preciso conhecer você melhor.
+*Qual é o seu nome?*
+    `.trim(),
+
+    "6": `
+👤 *Falar com Atendente*
+
+Você será direcionado para um de nossos atendentes humanos.
+
+Para agilizar, me diz rapidinho:
 *Qual é o seu nome?*
     `.trim(),
   },
@@ -300,7 +315,6 @@ const simulateTyping = async (chat) => {
       await chat.sendStateTyping();
     }
   } catch (e) {
-    // Ignora erro de typing - não afeta o funcionamento
   }
   await delay(CONFIG.delays.beforeSend);
 };
@@ -365,6 +379,38 @@ const sendMessage = async (msg, chat, text) => {
   stats.messagesSent++;
 };
 
+const notifyAttendant = async (name, phone, contact) => {
+  try {
+    const now = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
+    const contactName = contact?.pushname || contact?.name || name;
+    const cleanPhone = phone.replace(/@c\.us$|@s\.whatsapp\.net$/i, "").replace(/\D/g, "").slice(-13);
+    
+    const attendantMessage = `
+🔔 *SOLICITAÇÃO DE ATENDENTE*
+━━━━━━━━━━━━━━━━━━
+
+📅 *Data/Hora:* ${now}
+
+👤 *Nome:* ${name}
+👤 *Nome WhatsApp:* ${contactName}
+📱 *Telefone:* +${cleanPhone}
+
+⚡ *Cliente solicitou atendimento humano!*
+
+━━━━━━━━━━━━━━━━━━
+📲 *Clique para contato:*
+https://wa.me/${cleanPhone}
+    `.trim();
+
+    for (const admin of CONFIG.adminNumber) {
+      await client.sendMessage(admin, attendantMessage);
+    }
+    logger.success(`Solicitação de atendente enviada: ${name} | Tel: ${cleanPhone}`);
+  } catch (error) {
+    logger.error("Erro ao notificar atendente:", error);
+  }
+};
+
 const notifyAdmin = async (leadData, contact) => {
   try {
     const now = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
@@ -395,22 +441,25 @@ ${leadData.details}
 https://wa.me/${phoneNumber}
     `.trim();
 
-    await client.sendMessage(CONFIG.adminNumber, leadMessage);
-    logger.success(`Lead enviado para admin: ${leadData.name} | Tel: ${phoneNumber}`);
+    for (const admin of CONFIG.adminNumber) {
+      await client.sendMessage(admin, leadMessage);
+    }
+    logger.success(`Lead enviado para admins: ${leadData.name} | Tel: ${phoneNumber}`);
   } catch (error) {
     logger.error("Erro ao notificar admin:", error);
   }
 };
 
 async function handleConversation(msg, chat, texto) {
-  const userId = msg.from;
+  const phoneNumber = msg.from;
+  const userId = phoneNumber;
   const session = getSession(userId);
 
   if (CONFIG.triggerWords.test(texto) || texto === "voltar") {
     resetSession(userId);
     updateSession(userId, { state: FLOW_STATES.MENU });
     await sendMessage(msg, chat, MESSAGES.welcome(getSaudacao()));
-    logger.info(`Menu enviado para: ${userId.split("@")[0]}`);
+    logger.info(`Menu enviado para: ${userId.split("@c.us")[0]}`);
     return;
   }
 
@@ -419,14 +468,70 @@ async function handleConversation(msg, chat, texto) {
     case FLOW_STATES.MENU:
       if (SERVICES[texto]) {
         const service = SERVICES[texto];
-        updateSession(userId, {
-          state: FLOW_STATES.COLLECTING_NAME,
-          data: { ...session.data, serviceId: texto, service: service.name },
-        });
-        await sendMessage(msg, chat, MESSAGES.serviceDetails[texto]);
+        
+        // Opção 6 - Falar com atendente (fluxo especial)
+        if (texto === "6") {
+          updateSession(userId, {
+            state: FLOW_STATES.COLLECTING_NAME_ATTENDANT,
+            data: { ...session.data, serviceId: texto, service: service.name },
+          });
+          await sendMessage(msg, chat, MESSAGES.serviceDetails[texto]);
+        } else {
+          updateSession(userId, {
+            state: FLOW_STATES.COLLECTING_NAME,
+            data: { ...session.data, serviceId: texto, service: service.name },
+          });
+          await sendMessage(msg, chat, MESSAGES.serviceDetails[texto]);
+        }
       } else {
         await sendMessage(msg, chat, MESSAGES.invalidOption);
       }
+      break;
+
+    // Fluxo especial para atendente - só pega nome e notifica
+    case FLOW_STATES.COLLECTING_NAME_ATTENDANT:
+      if (texto.length < 2 || texto.length > 50) {
+        await sendMessage(msg, chat, "Por favor, digite um nome válido:");
+        return;
+      }
+      const attendantName = msg.body.trim().split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(" ");
+      
+      let attendantContact = null;
+      try {
+        attendantContact = await msg.getContact();
+      } catch (e) {}
+      
+      await notifyAttendant(attendantName, userId, attendantContact);
+      
+      updateSession(userId, {
+        state: FLOW_STATES.WAITING_ATTENDANT,
+        data: { ...session.data, name: attendantName },
+      });
+      
+      await sendMessage(msg, chat, `
+Perfeito, *${attendantName}*! 👋
+
+✅ *Um de nossos atendentes foi notificado!*
+
+Aguarde alguns instantes que entraremos em contato.
+Nosso horário de atendimento é de *segunda a sexta, das 9h às 18h*.
+
+Se preferir, você também pode:
+• Ligar: (11) 99696-1151
+• E-mail: contato@aithostech.com
+
+Obrigado pela paciência! 💙
+      `.trim());
+      break;
+
+    case FLOW_STATES.WAITING_ATTENDANT:
+      await sendMessage(msg, chat, `
+Você já está na fila de atendimento! 😊
+
+Um de nossos atendentes entrará em contato em breve.
+
+Se quiser recomeçar, digite *menu*.
+      `.trim());
       break;
 
     case FLOW_STATES.COLLECTING_NAME:
@@ -489,7 +594,9 @@ async function handleConversation(msg, chat, texto) {
       } catch (e) {
         // Ignora erro de getContact
       }
-      const finalData = { ...session.data, deadline: DEADLINE_OPTIONS[texto], phone: userId.split("@")[0] };
+      const rawPhone = userId.replace(/@c\.us$|@s\.whatsapp\.net$/i, "");
+      const cleanPhone = rawPhone.replace(/\D/g, "").slice(-13);
+      const finalData = { ...session.data, deadline: DEADLINE_OPTIONS[texto], phone: cleanPhone };
       updateSession(userId, {
         state: FLOW_STATES.FINISHED,
         data: finalData,

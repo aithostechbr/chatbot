@@ -1,6 +1,5 @@
 FROM node:20-slim
 
-# Instalar dependências do Chromium/Puppeteer
 RUN apt-get update && apt-get install -y \
     chromium \
     libatk1.0-0 \
@@ -19,7 +18,6 @@ RUN apt-get update && apt-get install -y \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
-# Configurar variáveis do Puppeteer
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
