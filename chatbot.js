@@ -24,7 +24,9 @@ const FLOW_STATES = {
   MENU: "menu",
   SERVICE_SELECTED: "service_selected",
   COLLECTING_NAME: "collecting_name",
+  COLLECTING_PHONE: "collecting_phone",
   COLLECTING_NAME_ATTENDANT: "collecting_name_attendant",
+  COLLECTING_PHONE_ATTENDANT: "collecting_phone_attendant",
   COLLECTING_BUSINESS: "collecting_business",
   COLLECTING_DETAILS: "collecting_details",
   COLLECTING_BUDGET: "collecting_budget",
@@ -163,8 +165,17 @@ Para agilizar, me diz rapidinho:
     `.trim(),
   },
 
-  askBusiness: (name) => `
+  askPhone: (name) => `
 Prazer, *${name}*! 😊
+
+📱 *Qual é o seu telefone para contato?*
+
+Digite apenas os números com DDD.
+_Exemplo: 11999998888_
+  `.trim(),
+
+  askBusiness: (name) => `
+Ótimo, *${name}*!
 
 Agora me conta: você tem um negócio/empresa ou é um projeto pessoal?
 
@@ -214,6 +225,7 @@ _"Um convite digital para meu casamento"_
 📋 *Resumo do seu pedido:*
 
 👤 *Nome:* ${data.name}
+📱 *Telefone:* +${data.phone}
 🏢 *Tipo:* ${data.businessType}
 ${data.service ? `📦 *Serviço:* ${data.service}` : ""}
 💬 *Descrição:* ${data.details}
@@ -378,43 +390,18 @@ const sendMessage = async (msg, chat, text) => {
   stats.messagesSent++;
 };
 
-const notifyAttendant = async (name, rawPhone, contact, msg) => {
+const notifyAttendant = async (name, phoneNumber, contact, msg) => {
   try {
     const now = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
     const contactName = contact?.pushname || contact?.name || name;
     
-    // Verificar se é LID (Logical Identifier - privacidade do WhatsApp)
-    const isLID = rawPhone.toLowerCase().includes("lid");
-    
-    // Tentar múltiplas fontes para o número
-    let cleanPhone = null;
-    
-    if (contact?.number) {
-      cleanPhone = String(contact.number).replace(/\D/g, "");
-    }
-    else if (contact?.id?.user && !contact.id.user.toLowerCase().includes("lid")) {
-      cleanPhone = String(contact.id.user).replace(/\D/g, "");
-    }
-    else if (!isLID) {
-      cleanPhone = rawPhone.replace(/@.*$/, "").replace(/\D/g, "");
-    }
-    
-    if (cleanPhone && cleanPhone.length > 15) {
-      cleanPhone = cleanPhone.slice(-13);
-    }
+    // Usa o telefone informado pelo cliente
+    const cleanPhone = String(phoneNumber).replace(/\D/g, "");
     
     const templateMsg = encodeURIComponent(`Olá ${name}! 👋\n\nAqui é da *Aithos Tech*. Vi que você solicitou atendimento humano.\n\nComo posso te ajudar?`);
     
-    let contactInfo = "";
-    let clickToContact = "";
-    
-    if (cleanPhone && cleanPhone.length >= 10) {
-      contactInfo = `📱 *Telefone:* +${cleanPhone}`;
-      clickToContact = `📲 *Clique para contato:*\nhttps://wa.me/${cleanPhone}?text=${templateMsg}`;
-    } else {
-      contactInfo = `📱 *Telefone:* ⚠️ Privado (WhatsApp LID)`;
-      clickToContact = `💬 *Para responder:* Abra o WhatsApp do bot e responda diretamente ao cliente "${contactName}".\n\n🆔 *Chat ID:* ${rawPhone}`;
-    }
+    const contactInfo = `📱 *Telefone:* +${cleanPhone}`;
+    const clickToContact = `📲 *Clique para contato:*\nhttps://wa.me/${cleanPhone}?text=${templateMsg}`;
     
     const attendantMessage = `
 🔔 *SOLICITAÇÃO DE ATENDENTE*
@@ -435,60 +422,24 @@ ${clickToContact}
     for (const admin of CONFIG.adminNumber) {
       await client.sendMessage(admin, attendantMessage);
     }
-    logger.success(`Solicitação de atendente enviada: ${name} | ID: ${rawPhone.split("@")[0]}`);
+    logger.success(`Solicitação de atendente enviada: ${name} | Tel: ${cleanPhone}`);
   } catch (error) {
     logger.error("Erro ao notificar atendente:", error);
   }
 };
 
-const notifyAdmin = async (leadData, contact, msg, rawUserId) => {
+const notifyAdmin = async (leadData, contact, msg) => {
   try {
     const now = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
     const contactName = contact?.pushname || contact?.name || leadData.name;
     
-    // DEBUG: Log detalhado para verificar captura do número
-    logger.info("=== DEBUG CAPTURA DE NÚMERO ===");
-    logger.info(`rawUserId (msg.from): ${rawUserId}`);
-    logger.info(`contact?.number: ${contact?.number || "N/A"}`);
-    logger.info(`contact?.id?.user: ${contact?.id?.user || "N/A"}`);
-    logger.info(`contact?.id?._serialized: ${contact?.id?._serialized || "N/A"}`);
-    logger.info(`leadData.phone: ${leadData.phone || "N/A"}`);
-    logger.info(`contact?.pushname: ${contact?.pushname || "N/A"}`);
-    logger.info(`contact?.name: ${contact?.name || "N/A"}`);
-    logger.info("================================");
-    
-    // Verificar se é LID (Logical Identifier - privacidade do WhatsApp)
-    const isLID = rawUserId?.toLowerCase().includes("lid") || false;
-    
-    // Tentar múltiplas fontes para o número
-    let phoneNumber = null;
-    
-    if (contact?.number) {
-      phoneNumber = String(contact.number).replace(/\D/g, "");
-    }
-    else if (contact?.id?.user && !contact.id.user.toLowerCase().includes("lid")) {
-      phoneNumber = String(contact.id.user).replace(/\D/g, "");
-    }
-    else if (leadData.phone && !leadData.phone.toLowerCase().includes("lid")) {
-      phoneNumber = String(leadData.phone).replace(/\D/g, "");
-    }
-    
-    if (phoneNumber && phoneNumber.length > 15) {
-      phoneNumber = phoneNumber.slice(-13);
-    }
+    // Usa o telefone informado pelo cliente
+    const phoneNumber = String(leadData.phone).replace(/\D/g, "");
     
     const templateMsg = encodeURIComponent(`Olá ${leadData.name}! 👋\n\nAqui é da *Aithos Tech*. Recebemos seu pedido de ${leadData.service}.\n\nVamos conversar sobre seu projeto?`);
     
-    let contactInfo = "";
-    let clickToContact = "";
-    
-    if (phoneNumber && phoneNumber.length >= 10) {
-      contactInfo = `📱 *Telefone:* +${phoneNumber}`;
-      clickToContact = `📲 *Clique para contato:*\nhttps://wa.me/${phoneNumber}?text=${templateMsg}`;
-    } else {
-      contactInfo = `📱 *Telefone:* ⚠️ Privado (WhatsApp LID)`;
-      clickToContact = `💬 *Para responder:* Abra o WhatsApp do bot e responda diretamente ao cliente "${contactName}".\n\n🆔 *Chat ID:* ${rawUserId || "N/A"}`;
-    }
+    const contactInfo = `📱 *Telefone:* +${phoneNumber}`;
+    const clickToContact = `📲 *Clique para contato:*\nhttps://wa.me/${phoneNumber}?text=${templateMsg}`;
     
     const leadMessage = `
 🎯 *NOVO LEAD CAPTURADO!*
@@ -515,7 +466,7 @@ ${clickToContact}
     for (const admin of CONFIG.adminNumber) {
       await client.sendMessage(admin, leadMessage);
     }
-    logger.success(`Lead enviado para admins: ${leadData.name} | ID: ${rawUserId?.split("@")[0] || phoneNumber}`);
+    logger.success(`Lead enviado para admins: ${leadData.name} | Tel: ${phoneNumber}`);
   } catch (error) {
     logger.error("Erro ao notificar admin:", error);
   }
@@ -567,28 +518,42 @@ async function handleConversation(msg, chat, texto) {
       }
       break;
 
-    // Fluxo especial para atendente - só pega nome e notifica
+    // Fluxo especial para atendente - pega nome e telefone
     case FLOW_STATES.COLLECTING_NAME_ATTENDANT:
       if (texto.length < 2 || texto.length > 50) {
         await sendMessage(msg, chat, "Por favor, digite um nome válido:");
         return;
       }
       const attendantName = msg.body.trim().split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(" ");
+      updateSession(userId, {
+        state: FLOW_STATES.COLLECTING_PHONE_ATTENDANT,
+        data: { ...session.data, name: attendantName },
+      });
+      await sendMessage(msg, chat, MESSAGES.askPhone(attendantName));
+      break;
+
+    case FLOW_STATES.COLLECTING_PHONE_ATTENDANT:
+      const attendantPhoneInput = texto.replace(/\D/g, "");
+      if (attendantPhoneInput.length < 10 || attendantPhoneInput.length > 13) {
+        await sendMessage(msg, chat, "❌ Telefone inválido!\n\nDigite apenas os números com DDD.\n_Exemplo: 11999998888_");
+        return;
+      }
+      const attendantFormattedPhone = attendantPhoneInput.length === 11 ? `55${attendantPhoneInput}` : (attendantPhoneInput.length === 10 ? `55${attendantPhoneInput}` : attendantPhoneInput);
       
       let attendantContact = null;
       try {
         attendantContact = await msg.getContact();
       } catch (e) {}
       
-      await notifyAttendant(attendantName, userId, attendantContact, msg);
+      await notifyAttendant(session.data.name, attendantFormattedPhone, attendantContact, msg);
       
       updateSession(userId, {
         state: FLOW_STATES.WAITING_ATTENDANT,
-        data: { ...session.data, name: attendantName },
+        data: { ...session.data, phone: attendantFormattedPhone },
       });
       
       await sendMessage(msg, chat, `
-Perfeito, *${attendantName}*! 👋
+Perfeito, *${session.data.name}*! 👋
 
 ✅ *Um de nossos atendentes foi notificado!*
 
@@ -619,10 +584,24 @@ Se quiser recomeçar, digite *menu*.
       }
       const name = msg.body.trim().split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(" ");
       updateSession(userId, {
-        state: FLOW_STATES.COLLECTING_BUSINESS,
+        state: FLOW_STATES.COLLECTING_PHONE,
         data: { ...session.data, name },
       });
-      await sendMessage(msg, chat, MESSAGES.askBusiness(name));
+      await sendMessage(msg, chat, MESSAGES.askPhone(name));
+      break;
+
+    case FLOW_STATES.COLLECTING_PHONE:
+      const phoneInput = texto.replace(/\D/g, "");
+      if (phoneInput.length < 10 || phoneInput.length > 13) {
+        await sendMessage(msg, chat, "❌ Telefone inválido!\n\nDigite apenas os números com DDD.\n_Exemplo: 11999998888_");
+        return;
+      }
+      const formattedPhone = phoneInput.length === 11 ? `55${phoneInput}` : (phoneInput.length === 10 ? `55${phoneInput}` : phoneInput);
+      updateSession(userId, {
+        state: FLOW_STATES.COLLECTING_BUSINESS,
+        data: { ...session.data, phone: formattedPhone },
+      });
+      await sendMessage(msg, chat, MESSAGES.askBusiness(session.data.name));
       break;
 
     case FLOW_STATES.COLLECTING_BUSINESS:
@@ -672,15 +651,13 @@ Se quiser recomeçar, digite *menu*.
       } catch (e) {
         // Ignora erro de getContact
       }
-      const rawPhone = userId.replace(/@c\.us$|@s\.whatsapp\.net$/i, "");
-      const cleanPhone = rawPhone.replace(/\D/g, "").slice(-13);
-      const finalData = { ...session.data, deadline: DEADLINE_OPTIONS[texto], phone: cleanPhone };
+      const finalData = { ...session.data, deadline: DEADLINE_OPTIONS[texto] };
       updateSession(userId, {
         state: FLOW_STATES.FINISHED,
         data: finalData,
       });
       await sendMessage(msg, chat, MESSAGES.summary(finalData));
-      await notifyAdmin(finalData, contact, msg, userId);
+      await notifyAdmin(finalData, contact, msg);
       logger.lead(finalData);
       break;
 
