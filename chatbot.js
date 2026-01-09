@@ -17,6 +17,7 @@ const CONFIG = {
 
 const userSessions = new Map();
 const pausedChats = new Map();
+const botSendingTo = new Map();
 const stats = { messagesSent: 0, messagesReceived: 0, errors: 0, startTime: Date.now() };
 let reconnectAttempts = 0;
 const PAUSE_DURATION = 3600000;
@@ -387,6 +388,7 @@ client.on("disconnected", async (reason) => {
 });
 
 const sendMessage = async (msg, chat, text) => {
+  botSendingTo.set(msg.from, Date.now());
   await simulateTyping(chat);
   await client.sendMessage(msg.from, text);
   stats.messagesSent++;
@@ -678,8 +680,12 @@ client.on("message_create", async (msg) => {
     if (msg.fromMe && !msg.from.endsWith("@g.us")) {
       const targetChat = msg.to;
       if (targetChat && !CONFIG.adminNumber.includes(targetChat)) {
+        const botSentTime = botSendingTo.get(targetChat);
+        if (botSentTime && (Date.now() - botSentTime) < 10000) {
+          return;
+        }
         pausedChats.set(targetChat, Date.now());
-        logger.info(`⏸️ Bot pausado para ${targetChat.split("@")[0]} (admin respondeu)`);
+        logger.info(`⏸️ Bot pausado para ${targetChat.split("@")[0]} (admin respondeu manualmente)`);
       }
     }
   } catch (error) {
