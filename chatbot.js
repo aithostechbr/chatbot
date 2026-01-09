@@ -16,8 +16,10 @@ const CONFIG = {
 };
 
 const userSessions = new Map();
+const pausedChats = new Map();
 const stats = { messagesSent: 0, messagesReceived: 0, errors: 0, startTime: Date.now() };
 let reconnectAttempts = 0;
+const PAUSE_DURATION = 3600000;
 
 const FLOW_STATES = {
   IDLE: "idle",
@@ -671,6 +673,20 @@ Se quiser recomeçar, digite *menu*.
   }
 }
 
+client.on("message_create", async (msg) => {
+  try {
+    if (msg.fromMe && !msg.from.endsWith("@g.us")) {
+      const targetChat = msg.to;
+      if (targetChat && !CONFIG.adminNumber.includes(targetChat)) {
+        pausedChats.set(targetChat, Date.now());
+        logger.info(`⏸️ Bot pausado para ${targetChat.split("@")[0]} (admin respondeu)`);
+      }
+    }
+  } catch (error) {
+    logger.error("Erro ao detectar mensagem enviada:", error);
+  }
+});
+
 client.on("message", async (msg) => {
   try {
     stats.messagesReceived++;
@@ -678,6 +694,15 @@ client.on("message", async (msg) => {
     if (!isValidPrivateMessage(msg)) return;
     const chat = await msg.getChat();
     if (chat.isGroup) return;
+
+    const pausedTime = pausedChats.get(msg.from);
+    if (pausedTime && (Date.now() - pausedTime) < PAUSE_DURATION) {
+      logger.info(`🔇 Mensagem ignorada de ${msg.from.split("@")[0]} (chat pausado - admin ativo)`);
+      return;
+    }
+    if (pausedTime) {
+      pausedChats.delete(msg.from);
+    }
 
     const texto = msg.body?.trim().toLowerCase() || "";
     if (!texto) return;
