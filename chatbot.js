@@ -446,6 +446,17 @@ const notifyAdmin = async (leadData, contact, msg, rawUserId) => {
     const now = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
     const contactName = contact?.pushname || contact?.name || leadData.name;
     
+    // DEBUG: Log detalhado para verificar captura do número
+    logger.info("=== DEBUG CAPTURA DE NÚMERO ===");
+    logger.info(`rawUserId (msg.from): ${rawUserId}`);
+    logger.info(`contact?.number: ${contact?.number || "N/A"}`);
+    logger.info(`contact?.id?.user: ${contact?.id?.user || "N/A"}`);
+    logger.info(`contact?.id?._serialized: ${contact?.id?._serialized || "N/A"}`);
+    logger.info(`leadData.phone: ${leadData.phone || "N/A"}`);
+    logger.info(`contact?.pushname: ${contact?.pushname || "N/A"}`);
+    logger.info(`contact?.name: ${contact?.name || "N/A"}`);
+    logger.info("================================");
+    
     // Verificar se é LID (Logical Identifier - privacidade do WhatsApp)
     const isLID = rawUserId?.toLowerCase().includes("lid") || false;
     
