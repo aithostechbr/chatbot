@@ -242,9 +242,6 @@ ${data.service ? `📦 *Serviço:* ${data.service}` : ""}
 2️⃣ Em até *24 horas úteis* entraremos em contato
 3️⃣ Você receberá uma proposta personalizada
 
-📝 *Opcional:* Se quiser adiantar, preencha nosso formulário completo:
-${CONFIG.formLink}
-
 Obrigado pelo interesse! 💙
 *Aithos Tech — tecnologia sob medida.*
   `.trim(),
