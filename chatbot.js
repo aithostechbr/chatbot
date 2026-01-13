@@ -692,10 +692,17 @@ client.on("message_create", async (msg) => {
 client.on("message", async (msg) => {
   try {
     stats.messagesReceived++;
+    logger.info(`📩 MENSAGEM RECEBIDA de ${msg.from}: "${msg.body?.substring(0, 50)}"`);
 
-    if (!isValidPrivateMessage(msg)) return;
+    if (!isValidPrivateMessage(msg)) {
+      logger.info(`⏭️ Ignorada: não é mensagem privada válida (from: ${msg.from})`);
+      return;
+    }
     const chat = await msg.getChat();
-    if (chat.isGroup) return;
+    if (chat.isGroup) {
+      logger.info(`⏭️ Ignorada: é grupo`);
+      return;
+    }
 
     const pausedTime = pausedChats.get(msg.from);
     if (pausedTime && (Date.now() - pausedTime) < PAUSE_DURATION) {
