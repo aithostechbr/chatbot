@@ -3,8 +3,7 @@ const { Client, LocalAuth } = require("whatsapp-web.js");
 
 const CONFIG = {
   delays: { typing: 1500, beforeSend: 1500 },
-  formLink: "https://aithostech.com/briefing",
-  adminNumber: ["5511996961151@c.us", "5511947813352@c.us", "5511968551256@c.us", "5511945402503@c.us"],
+  adminNumber: ["5511996961151@c.us"],
   cooldownMs: 30000,
   sessionTimeout: 600000,
   maxReconnectAttempts: 5,
