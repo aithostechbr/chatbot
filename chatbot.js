@@ -417,8 +417,10 @@ const startReadyWatchdog = () => {
 const client = new Client({
   authStrategy: new LocalAuth(),
   puppeteer: CONFIG.puppeteer,
-  webVersionCache: { type: "none" }, // força sempre pegar versão mais recente do WA Web
-  authTimeoutMs: 120000, // aguarda até 120s pelos seletores de auth
+  webVersionCache: { type: "remote", remotePath: "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/{version}.html" },
+  authTimeoutMs: 180000,
+  takeoverOnConflict: true,
+  takeoverTimeoutMs: 30000,
 });
 
 client.on("qr", (qr) => {
