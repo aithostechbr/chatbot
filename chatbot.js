@@ -30,6 +30,8 @@ const messageQueue = []; // Fila de mensagens com falha para reenvio
 const stats = { messagesSent: 0, messagesReceived: 0, errors: 0, startTime: Date.now() };
 let reconnectAttempts = 0;
 const PAUSE_DURATION = 3600000;
+const READY_TIMEOUT_MS = 120000;
+const READY_CHECK_INTERVAL_MS = 5000;
 
 const FLOW_STATES = {                       
   IDLE: "idle",
@@ -366,6 +368,52 @@ const logger = {
   lead: (data) => console.log(`[${getTimestamp()}] 🎯 NOVO LEAD: ${data.name} | ${data.service} | ${data.budget}`),
 };
 
+let readyTimeout = null;
+let readyInterval = null;
+
+const stopReadyWatchdog = () => {
+  if (readyInterval) clearInterval(readyInterval);
+  if (readyTimeout) clearTimeout(readyTimeout);
+  readyInterval = null;
+  readyTimeout = null;
+};
+
+const startReadyWatchdog = () => {
+  if (readyInterval || readyTimeout) return;
+
+  readyInterval = setInterval(async () => {
+    try {
+      const state = await client.getState();
+      logger.warn(`Estado WhatsApp: ${state || "unknown"}`);
+      if (state === "CONNECTED") {
+        stopReadyWatchdog();
+      }
+    } catch (err) {
+      logger.debug(`Falha ao consultar estado: ${err.message}`);
+    }
+  }, READY_CHECK_INTERVAL_MS);
+
+  readyTimeout = setTimeout(async () => {
+    stopReadyWatchdog();
+    if (reconnectAttempts >= CONFIG.maxReconnectAttempts) {
+      logger.error("Maximo de tentativas de reconexao atingido.");
+      return;
+    }
+    reconnectAttempts++;
+    logger.warn(`Ready nao chegou a tempo. Reiniciando cliente... (${reconnectAttempts}/${CONFIG.maxReconnectAttempts})`);
+    try {
+      await client.destroy();
+    } catch (err) {
+      logger.debug(`Falha ao destruir cliente: ${err.message}`);
+    }
+    try {
+      await client.initialize();
+    } catch (err) {
+      logger.error(`Falha ao reiniciar cliente: ${err.message}`);
+    }
+  }, READY_TIMEOUT_MS);
+};
+
 const client = new Client({
   authStrategy: new LocalAuth(),
   puppeteer: CONFIG.puppeteer,
@@ -379,13 +427,23 @@ client.on("qr", (qr) => {
 });
 
 client.on("ready", () => {
+  stopReadyWatchdog();
   reconnectAttempts = 0;
   logger.success("WhatsApp conectado com sucesso!");
   logger.info("Bot aguardando mensagens...");
   setInterval(() => logger.stats(), 300000);
 });
 
-client.on("authenticated", () => logger.success("Autenticação realizada com sucesso!"));
+client.on("authenticated", () => {
+  logger.success("Autenticacao realizada com sucesso!");
+  startReadyWatchdog();
+});
+client.on("loading_screen", (percent, msg) => {
+  logger.info(`Carregando WhatsApp Web: ${percent}% - ${msg}`);
+});
+client.on("change_state", (state) => {
+  logger.warn(`Estado WhatsApp: ${state}`);
+});
 client.on("auth_failure", (msg) => {
   stats.errors++;
   logger.error("Falha na autenticação:", msg);
