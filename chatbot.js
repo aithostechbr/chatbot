@@ -30,6 +30,8 @@ const messageQueue = []; // Fila de mensagens com falha para reenvio
 const stats = { messagesSent: 0, messagesReceived: 0, errors: 0, startTime: Date.now() };
 let reconnectAttempts = 0;
 const PAUSE_DURATION = 3600000;
+const PROCESSED_TTL_MS = 10 * 60 * 1000;
+const processedMessages = new Set();
 const READY_TIMEOUT_MS = 120000;
 const READY_CHECK_INTERVAL_MS = 5000;
 
@@ -370,6 +372,7 @@ const logger = {
 
 let readyTimeout = null;
 let readyInterval = null;
+let isReady = false;
 
 const stopReadyWatchdog = () => {
   if (readyInterval) clearInterval(readyInterval);
@@ -387,6 +390,12 @@ const startReadyWatchdog = () => {
       logger.warn(`Estado WhatsApp: ${state || "unknown"}`);
       if (state === "CONNECTED") {
         stopReadyWatchdog();
+        if (!isReady) {
+          isReady = true;
+          logger.success("WhatsApp conectado com sucesso!");
+          logger.info("Bot aguardando mensagens...");
+          setInterval(() => logger.stats(), 300000);
+        }
       }
     } catch (err) {
       logger.debug(`Falha ao consultar estado: ${err.message}`);
@@ -431,6 +440,7 @@ client.on("qr", (qr) => {
 client.on("ready", () => {
   stopReadyWatchdog();
   reconnectAttempts = 0;
+  isReady = true;
   logger.success("WhatsApp conectado com sucesso!");
   logger.info("Bot aguardando mensagens...");
   setInterval(() => logger.stats(), 300000);
@@ -445,6 +455,12 @@ client.on("loading_screen", (percent, msg) => {
 });
 client.on("change_state", (state) => {
   logger.warn(`Estado WhatsApp: ${state}`);
+  if (state === "CONNECTED" && !isReady) {
+    isReady = true;
+    logger.success("WhatsApp conectado com sucesso!");
+    logger.info("Bot aguardando mensagens...");
+    setInterval(() => logger.stats(), 300000);
+  }
 });
 client.on("auth_failure", (msg) => {
   stats.errors++;
@@ -545,6 +561,53 @@ const processMessageQueue = async () => {
       logger.error(`❌ Mensagem descartada após ${item.maxAttempts} tentativas: ${item.to}`);
       stats.errors++;
     }
+  }
+};
+
+const markProcessed = (msgId) => {
+  processedMessages.add(msgId);
+  setTimeout(() => processedMessages.delete(msgId), PROCESSED_TTL_MS);
+};
+
+const shouldProcessMessage = (msg) => {
+  const msgId = msg?.id?._serialized || `${msg.from}-${msg.timestamp}-${msg.body}`;
+  if (processedMessages.has(msgId)) return false;
+  markProcessed(msgId);
+  return true;
+};
+
+const handleIncomingMessage = async (msg) => {
+  try {
+    if (!shouldProcessMessage(msg)) return;
+    stats.messagesReceived++;
+    logger.info(`📩 MENSAGEM RECEBIDA de ${msg.from}: "${msg.body?.substring(0, 50)}"`);
+
+    if (!isValidPrivateMessage(msg)) {
+      logger.info(`⏭️ Ignorada: não é mensagem privada válida (from: ${msg.from})`);
+      return;
+    }
+    const chat = await msg.getChat();
+    if (chat.isGroup) {
+      logger.info(`⏭️ Ignorada: é grupo`);
+      return;
+    }
+
+    const pausedTime = pausedChats.get(msg.from);
+    if (pausedTime && (Date.now() - pausedTime) < PAUSE_DURATION) {
+      logger.info(`🔇 Mensagem ignorada de ${msg.from.split("@")[0]} (chat pausado - admin ativo)`);
+      return;
+    }
+    if (pausedTime) {
+      pausedChats.delete(msg.from);
+    }
+
+    const texto = msg.body?.trim().toLowerCase() || "";
+    if (!texto) return;
+
+    await handleConversation(msg, chat, texto);
+  } catch (error) {
+    stats.errors++;
+    logger.error("Erro no processamento:", error);
   }
 };
 
@@ -863,6 +926,10 @@ Se quiser recomeçar, digite *menu*.
 
 client.on("message_create", async (msg) => {
   try {
+    if (!msg.fromMe) {
+      await handleIncomingMessage(msg);
+      return;
+    }
     if (msg.fromMe && !msg.from.endsWith("@g.us")) {
       const targetChat = msg.to;
       if (targetChat && !CONFIG.adminNumber.includes(targetChat)) {
@@ -880,37 +947,7 @@ client.on("message_create", async (msg) => {
 });
 
 client.on("message", async (msg) => {
-  try {
-    stats.messagesReceived++;
-    logger.info(`📩 MENSAGEM RECEBIDA de ${msg.from}: "${msg.body?.substring(0, 50)}"`);
-
-    if (!isValidPrivateMessage(msg)) {
-      logger.info(`⏭️ Ignorada: não é mensagem privada válida (from: ${msg.from})`);
-      return;
-    }
-    const chat = await msg.getChat();
-    if (chat.isGroup) {
-      logger.info(`⏭️ Ignorada: é grupo`);
-      return;
-    }
-
-    const pausedTime = pausedChats.get(msg.from);
-    if (pausedTime && (Date.now() - pausedTime) < PAUSE_DURATION) {
-      logger.info(`🔇 Mensagem ignorada de ${msg.from.split("@")[0]} (chat pausado - admin ativo)`);
-      return;
-    }
-    if (pausedTime) {
-      pausedChats.delete(msg.from);
-    }
-
-    const texto = msg.body?.trim().toLowerCase() || "";
-    if (!texto) return;
-
-    await handleConversation(msg, chat, texto);
-  } catch (error) {
-    stats.errors++;
-    logger.error("Erro no processamento:", error);
-  }
+  await handleIncomingMessage(msg);
 });
 
 const shutdown = async () => {
