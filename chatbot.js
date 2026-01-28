@@ -15,27 +15,11 @@ const CONFIG = {
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
       "--disable-gpu",
-      "--single-process",
-      "--disable-web-resources",
-      "--disable-images",
-      "--disable-default-apps",
-      "--disable-extensions",
-      "--disable-sync",
-      "--disable-translate",
-      "--disable-plugins",
-      "--disable-background-networking",
-      "--disable-breakpad",
-      "--disable-client-side-phishing-detection",
-      "--disable-default-apps",
-      "--disable-hang-monitor",
-      "--disable-popup-blocking",
-      "--disable-prompt-on-repost",
-      "--disable-preconnect",
       "--no-first-run",
       "--no-default-browser-check"
     ],
-    timeout: 120000,
-    protocolTimeout: 120000,
+    timeout: 300000,
+    protocolTimeout: 300000,
   },
 };
 
@@ -47,7 +31,7 @@ const stats = { messagesSent: 0, messagesReceived: 0, errors: 0, startTime: Date
 let reconnectAttempts = 0;
 const PAUSE_DURATION = 3600000;
 
-const FLOW_STATES = {
+const FLOW_STATES = {                       
   IDLE: "idle",
   MENU: "menu",
   SERVICE_SELECTED: "service_selected",
