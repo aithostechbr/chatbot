@@ -510,7 +510,10 @@ const checkHealth = async () => {
       return true;
     }
     
-    logger.warn("⚠️ Cliente não está pronto ou não tem informações de conexão");
+    // Só loga aviso depois de alguns segundos de startup
+    if (Date.now() - stats.startTime > 60000) {
+      logger.debug("⚠️ Cliente não está pronto ou não tem informações de conexão");
+    }
     return false;
   } catch (error) {
     logger.error(`❌ Erro ao verificar saúde: ${error.message}`);
