@@ -34,8 +34,8 @@ const CONFIG = {
       "--no-first-run",
       "--no-default-browser-check"
     ],
-    timeout: 60000,
-    protocolTimeout: 30000,
+    timeout: 120000,
+    protocolTimeout: 120000,
   },
 };
 
