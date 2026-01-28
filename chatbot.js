@@ -10,13 +10,39 @@ const CONFIG = {
   puppeteer: {
     headless: true,
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--single-process"],
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--single-process",
+      "--disable-web-resources",
+      "--disable-images",
+      "--disable-default-apps",
+      "--disable-extensions",
+      "--disable-sync",
+      "--disable-translate",
+      "--disable-plugins",
+      "--disable-background-networking",
+      "--disable-breakpad",
+      "--disable-client-side-phishing-detection",
+      "--disable-default-apps",
+      "--disable-hang-monitor",
+      "--disable-popup-blocking",
+      "--disable-prompt-on-repost",
+      "--disable-preconnect",
+      "--no-first-run",
+      "--no-default-browser-check"
+    ],
+    timeout: 60000,
+    protocolTimeout: 30000,
   },
 };
 
 const userSessions = new Map();
 const pausedChats = new Map();
 const botSendingTo = new Map();
+const messageQueue = []; // Fila de mensagens com falha para reenvio
 const stats = { messagesSent: 0, messagesReceived: 0, errors: 0, startTime: Date.now() };
 let reconnectAttempts = 0;
 const PAUSE_DURATION = 3600000;
@@ -322,9 +348,16 @@ const simulateTyping = async (chat) => {
   await delay(CONFIG.delays.typing);
   try {
     if (chat.sendStateTyping) {
-      await chat.sendStateTyping();
+      await Promise.race([
+        chat.sendStateTyping(),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error("sendStateTyping timeout")), 5000)
+        )
+      ]);
     }
   } catch (e) {
+    logger.debug(`Erro ao enviar estado de digitação: ${e.message}`);
+    // Continua sem falhar
   }
   await delay(CONFIG.delays.beforeSend);
 };
@@ -343,6 +376,7 @@ const logger = {
   success: (msg) => console.log(`[${getTimestamp()}] ✅ ${msg}`),
   warn: (msg) => console.log(`[${getTimestamp()}] ⚠️  ${msg}`),
   error: (msg, err) => console.error(`[${getTimestamp()}] ❌ ${msg}`, err || ""),
+  debug: (msg) => process.env.DEBUG && console.log(`[${getTimestamp()}] 🐛 ${msg}`),
   qr: (msg) => console.log(`[${getTimestamp()}] 📲 ${msg}`),
   stats: () => console.log(`[${getTimestamp()}] 📊 Uptime: ${getUptime()} | Enviadas: ${stats.messagesSent} | Recebidas: ${stats.messagesReceived} | Erros: ${stats.errors}`),
   lead: (data) => console.log(`[${getTimestamp()}] 🎯 NOVO LEAD: ${data.name} | ${data.service} | ${data.budget}`),
@@ -386,8 +420,102 @@ client.on("disconnected", async (reason) => {
 const sendMessage = async (msg, chat, text) => {
   botSendingTo.set(msg.from, Date.now());
   await simulateTyping(chat);
-  await client.sendMessage(msg.from, text);
-  stats.messagesSent++;
+  
+  const queueItem = {
+    to: msg.from,
+    text: text,
+    attempts: 0,
+    maxAttempts: 3,
+    timestamp: Date.now()
+  };
+  
+  try {
+    await client.sendMessage(msg.from, text);
+    stats.messagesSent++;
+    logger.info(`✅ Mensagem enviada para ${msg.from}`);
+  } catch (error) {
+    stats.errors++;
+    logger.error(`❌ Erro ao enviar mensagem para ${msg.from}: ${error.message}`);
+    logger.error(`Stack: ${error.stack}`);
+    
+    // Adiciona à fila para reprocessamento
+    queueItem.attempts++;
+    messageQueue.push(queueItem);
+    logger.info(`📤 Mensagem adicionada à fila de reprocessamento (tentativa ${queueItem.attempts}/${queueItem.maxAttempts})`);
+    
+    // Se for um erro de timeout ou conexão, tenta reenviar imediatamente após delay
+    if (error.message.includes("timeout") || error.message.includes("ETIMEDOUT") || error.message.includes("ERR_TIMED_OUT")) {
+      await delay(3000);
+      try {
+        await client.sendMessage(msg.from, text);
+        stats.messagesSent++;
+        logger.info(`✅ Mensagem reenviada com sucesso para ${msg.from}`);
+        // Remove da fila se conseguiu
+        const idx = messageQueue.indexOf(queueItem);
+        if (idx > -1) messageQueue.splice(idx, 1);
+      } catch (retryError) {
+        stats.errors++;
+        logger.error(`❌ Falha na tentativa de reenvio para ${msg.from}: ${retryError.message}`);
+      }
+    }
+  }
+};
+
+// Processa a fila de mensagens periodicamente
+const processMessageQueue = async () => {
+  if (messageQueue.length === 0) return;
+  
+  const itemsToProcess = [...messageQueue];
+  
+  for (const item of itemsToProcess) {
+    // Se já passou 10 minutos desde a adição à fila, descarta
+    if (Date.now() - item.timestamp > 600000) {
+      const idx = messageQueue.indexOf(item);
+      if (idx > -1) messageQueue.splice(idx, 1);
+      logger.warn(`⏰ Mensagem descartada (timeout de 10 minutos): ${item.to}`);
+      continue;
+    }
+    
+    // Se ainda há tentativas, tenta reenviar
+    if (item.attempts < item.maxAttempts) {
+      item.attempts++;
+      try {
+        logger.info(`🔄 Reprocessando mensagem para ${item.to} (tentativa ${item.attempts}/${item.maxAttempts})`);
+        await delay(1000); // Aguarda 1 segundo antes de tentar
+        await client.sendMessage(item.to, item.text);
+        stats.messagesSent++;
+        logger.info(`✅ Mensagem reenviada com sucesso (fila) para ${item.to}`);
+        // Remove da fila
+        const idx = messageQueue.indexOf(item);
+        if (idx > -1) messageQueue.splice(idx, 1);
+      } catch (error) {
+        logger.debug(`⚠️ Reprocessamento falhou para ${item.to}: ${error.message}`);
+        // Continua na fila para próxima tentativa
+      }
+    } else {
+      // Já atingiu o máximo de tentativas
+      const idx = messageQueue.indexOf(item);
+      if (idx > -1) messageQueue.splice(idx, 1);
+      logger.error(`❌ Mensagem descartada após ${item.maxAttempts} tentativas: ${item.to}`);
+      stats.errors++;
+    }
+  }
+};
+
+// Monitor de saúde da conexão
+const checkHealth = async () => {
+  try {
+    // Se o cliente está pronto, tudo bem
+    if (client.info && client.info.wid) {
+      return true;
+    }
+    
+    logger.warn("⚠️ Cliente não está pronto ou não tem informações de conexão");
+    return false;
+  } catch (error) {
+    logger.error(`❌ Erro ao verificar saúde: ${error.message}`);
+    return false;
+  }
 };
 
 const notifyAttendant = async (name, phoneNumber, contact, msg) => {
@@ -473,86 +601,87 @@ ${clickToContact}
 };
 
 async function handleConversation(msg, chat, texto) {
-  const phoneNumber = msg.from;
-  const userId = phoneNumber;
-  const session = getSession(userId);
+  try {
+    const phoneNumber = msg.from;
+    const userId = phoneNumber;
+    const session = getSession(userId);
 
-  // Se digitar menu ou voltar, sempre reseta
-  if (/^(menu|voltar)$/i.test(texto)) {
-    resetSession(userId);
-    updateSession(userId, { state: FLOW_STATES.MENU });
-    await sendMessage(msg, chat, MESSAGES.welcome(getSaudacao()));
-    logger.info(`Menu enviado para: ${userId.split("@c.us")[0]}`);
-    return;
-  }
+    // Se digitar menu ou voltar, sempre reseta
+    if (/^(menu|voltar)$/i.test(texto)) {
+      resetSession(userId);
+      updateSession(userId, { state: FLOW_STATES.MENU });
+      await sendMessage(msg, chat, MESSAGES.welcome(getSaudacao()));
+      logger.info(`Menu enviado para: ${userId.split("@c.us")[0]}`);
+      return;
+    }
 
-  // Se estiver em IDLE, qualquer mensagem inicia o menu
-  if (session.state === FLOW_STATES.IDLE) {
-    updateSession(userId, { state: FLOW_STATES.MENU });
-    await sendMessage(msg, chat, MESSAGES.welcome(getSaudacao()));
-    logger.info(`Menu enviado para: ${userId.split("@c.us")[0]}`);
-    return;
-  }
+    // Se estiver em IDLE, qualquer mensagem inicia o menu
+    if (session.state === FLOW_STATES.IDLE) {
+      updateSession(userId, { state: FLOW_STATES.MENU });
+      await sendMessage(msg, chat, MESSAGES.welcome(getSaudacao()));
+      logger.info(`Menu enviado para: ${userId.split("@c.us")[0]}`);
+      return;
+    }
 
-  switch (session.state) {
-    case FLOW_STATES.MENU:
-      if (SERVICES[texto]) {
-        const service = SERVICES[texto];
-        
-        // Opção 6 - Falar com atendente (fluxo especial)
-        if (texto === "6") {
-          updateSession(userId, {
-            state: FLOW_STATES.COLLECTING_NAME_ATTENDANT,
-            data: { ...session.data, serviceId: texto, service: service.name },
-          });
-          await sendMessage(msg, chat, MESSAGES.serviceDetails[texto]);
+    switch (session.state) {
+      case FLOW_STATES.MENU:
+        if (SERVICES[texto]) {
+          const service = SERVICES[texto];
+          
+          // Opção 6 - Falar com atendente (fluxo especial)
+          if (texto === "6") {
+            updateSession(userId, {
+              state: FLOW_STATES.COLLECTING_NAME_ATTENDANT,
+              data: { ...session.data, serviceId: texto, service: service.name },
+            });
+            await sendMessage(msg, chat, MESSAGES.serviceDetails[texto]);
+          } else {
+            updateSession(userId, {
+              state: FLOW_STATES.COLLECTING_NAME,
+              data: { ...session.data, serviceId: texto, service: service.name },
+            });
+            await sendMessage(msg, chat, MESSAGES.serviceDetails[texto]);
+          }
         } else {
-          updateSession(userId, {
-            state: FLOW_STATES.COLLECTING_NAME,
-            data: { ...session.data, serviceId: texto, service: service.name },
-          });
-          await sendMessage(msg, chat, MESSAGES.serviceDetails[texto]);
+          await sendMessage(msg, chat, MESSAGES.invalidOption);
         }
-      } else {
-        await sendMessage(msg, chat, MESSAGES.invalidOption);
-      }
-      break;
+        break;
 
-    // Fluxo especial para atendente - pega nome e telefone
-    case FLOW_STATES.COLLECTING_NAME_ATTENDANT:
-      if (texto.length < 2 || texto.length > 50) {
-        await sendMessage(msg, chat, "Por favor, digite um nome válido:");
-        return;
-      }
-      const attendantName = msg.body.trim().split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(" ");
-      updateSession(userId, {
-        state: FLOW_STATES.COLLECTING_PHONE_ATTENDANT,
-        data: { ...session.data, name: attendantName },
-      });
-      await sendMessage(msg, chat, MESSAGES.askPhone(attendantName));
-      break;
+      // Fluxo especial para atendente - pega nome e telefone
+      case FLOW_STATES.COLLECTING_NAME_ATTENDANT:
+        if (texto.length < 2 || texto.length > 50) {
+          await sendMessage(msg, chat, "Por favor, digite um nome válido:");
+          return;
+        }
+        const attendantName = msg.body.trim().split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(" ");
+        updateSession(userId, {
+          state: FLOW_STATES.COLLECTING_PHONE_ATTENDANT,
+          data: { ...session.data, name: attendantName },
+        });
+        await sendMessage(msg, chat, MESSAGES.askPhone(attendantName));
+        break;
 
-    case FLOW_STATES.COLLECTING_PHONE_ATTENDANT:
-      const attendantPhoneInput = texto.replace(/\D/g, "");
-      if (attendantPhoneInput.length < 10 || attendantPhoneInput.length > 13) {
-        await sendMessage(msg, chat, "❌ Telefone inválido!\n\nDigite apenas os números com DDD.\n_Exemplo: 11999998888_");
-        return;
-      }
-      const attendantFormattedPhone = attendantPhoneInput.length === 11 ? `55${attendantPhoneInput}` : (attendantPhoneInput.length === 10 ? `55${attendantPhoneInput}` : attendantPhoneInput);
-      
-      let attendantContact = null;
-      try {
-        attendantContact = await msg.getContact();
-      } catch (e) {}
-      
-      await notifyAttendant(session.data.name, attendantFormattedPhone, attendantContact, msg);
-      
-      updateSession(userId, {
-        state: FLOW_STATES.WAITING_ATTENDANT,
-        data: { ...session.data, phone: attendantFormattedPhone },
-      });
-      
-      await sendMessage(msg, chat, `
+      case FLOW_STATES.COLLECTING_PHONE_ATTENDANT:
+        const attendantPhoneInput = texto.replace(/\D/g, "");
+        if (attendantPhoneInput.length < 10 || attendantPhoneInput.length > 13) {
+          await sendMessage(msg, chat, "❌ Telefone inválido!\n\nDigite apenas os números com DDD.\n_Exemplo: 11999998888_");
+          return;
+        }
+        const attendantFormattedPhone = attendantPhoneInput.length === 11 ? `55${attendantPhoneInput}` : (attendantPhoneInput.length === 10 ? `55${attendantPhoneInput}` : attendantPhoneInput);
+        
+        let attendantContact = null;
+        try {
+          attendantContact = await msg.getContact();
+        } catch (e) {}
+        
+        await notifyAttendant(session.data.name, attendantFormattedPhone, attendantContact, msg);
+        
+        updateSession(userId, {
+          state: FLOW_STATES.WAITING_ATTENDANT,
+          data: { ...session.data, phone: attendantFormattedPhone },
+        });
+        
+        await sendMessage(msg, chat, `
 Perfeito, *${session.data.name}*! 👋
 
 ✅ *Um de nossos atendentes foi notificado!*
@@ -564,112 +693,124 @@ Se preferir, você também pode:
 • E-mail: contato@aithostech.com.br
 
 Obrigado pela paciência! 💙
-      `.trim());
-      break;
+        `.trim());
+        break;
 
-    case FLOW_STATES.WAITING_ATTENDANT:
-      await sendMessage(msg, chat, `
+      case FLOW_STATES.WAITING_ATTENDANT:
+        await sendMessage(msg, chat, `
 Você já está na fila de atendimento! 😊
 
 Um de nossos atendentes entrará em contato em breve.
 
 Se quiser recomeçar, digite *menu*.
-      `.trim());
-      break;
+        `.trim());
+        break;
 
-    case FLOW_STATES.COLLECTING_NAME:
-      if (texto.length < 2 || texto.length > 50) {
-        await sendMessage(msg, chat, "Por favor, digite um nome válido:");
-        return;
-      }
-      const name = msg.body.trim().split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(" ");
-      updateSession(userId, {
-        state: FLOW_STATES.COLLECTING_PHONE,
-        data: { ...session.data, name },
-      });
-      await sendMessage(msg, chat, MESSAGES.askPhone(name));
-      break;
+      case FLOW_STATES.COLLECTING_NAME:
+        if (texto.length < 2 || texto.length > 50) {
+          await sendMessage(msg, chat, "Por favor, digite um nome válido:");
+          return;
+        }
+        const name = msg.body.trim().split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(" ");
+        updateSession(userId, {
+          state: FLOW_STATES.COLLECTING_PHONE,
+          data: { ...session.data, name },
+        });
+        await sendMessage(msg, chat, MESSAGES.askPhone(name));
+        break;
 
-    case FLOW_STATES.COLLECTING_PHONE:
-      const phoneInput = texto.replace(/\D/g, "");
-      if (phoneInput.length < 10 || phoneInput.length > 13) {
-        await sendMessage(msg, chat, "❌ Telefone inválido!\n\nDigite apenas os números com DDD.\n_Exemplo: 11999998888_");
-        return;
-      }
-      const formattedPhone = phoneInput.length === 11 ? `55${phoneInput}` : (phoneInput.length === 10 ? `55${phoneInput}` : phoneInput);
-      updateSession(userId, {
-        state: FLOW_STATES.COLLECTING_BUSINESS,
-        data: { ...session.data, phone: formattedPhone },
-      });
-      await sendMessage(msg, chat, MESSAGES.askBusiness(session.data.name));
-      break;
+      case FLOW_STATES.COLLECTING_PHONE:
+        const phoneInput = texto.replace(/\D/g, "");
+        if (phoneInput.length < 10 || phoneInput.length > 13) {
+          await sendMessage(msg, chat, "❌ Telefone inválido!\n\nDigite apenas os números com DDD.\n_Exemplo: 11999998888_");
+          return;
+        }
+        const formattedPhone = phoneInput.length === 11 ? `55${phoneInput}` : (phoneInput.length === 10 ? `55${phoneInput}` : phoneInput);
+        updateSession(userId, {
+          state: FLOW_STATES.COLLECTING_BUSINESS,
+          data: { ...session.data, phone: formattedPhone },
+        });
+        await sendMessage(msg, chat, MESSAGES.askBusiness(session.data.name));
+        break;
 
-    case FLOW_STATES.COLLECTING_BUSINESS:
-      if (!BUSINESS_OPTIONS[texto]) {
-        await sendMessage(msg, chat, MESSAGES.invalidOption);
-        return;
-      }
-      updateSession(userId, {
-        state: FLOW_STATES.COLLECTING_DETAILS,
-        data: { ...session.data, businessType: BUSINESS_OPTIONS[texto] },
-      });
-      await sendMessage(msg, chat, MESSAGES.askDetails());
-      break;
+      case FLOW_STATES.COLLECTING_BUSINESS:
+        if (!BUSINESS_OPTIONS[texto]) {
+          await sendMessage(msg, chat, MESSAGES.invalidOption);
+          return;
+        }
+        updateSession(userId, {
+          state: FLOW_STATES.COLLECTING_DETAILS,
+          data: { ...session.data, businessType: BUSINESS_OPTIONS[texto] },
+        });
+        await sendMessage(msg, chat, MESSAGES.askDetails());
+        break;
 
-    case FLOW_STATES.COLLECTING_DETAILS:
-      if (texto.length < 10) {
-        await sendMessage(msg, chat, "Por favor, descreva um pouco mais sua ideia (mínimo 10 caracteres):");
-        return;
-      }
-      updateSession(userId, {
-        state: FLOW_STATES.COLLECTING_BUDGET,
-        data: { ...session.data, details: msg.body.trim() },
-      });
-      await sendMessage(msg, chat, MESSAGES.askBudget);
-      break;
+      case FLOW_STATES.COLLECTING_DETAILS:
+        if (texto.length < 10) {
+          await sendMessage(msg, chat, "Por favor, descreva um pouco mais sua ideia (mínimo 10 caracteres):");
+          return;
+        }
+        updateSession(userId, {
+          state: FLOW_STATES.COLLECTING_BUDGET,
+          data: { ...session.data, details: msg.body.trim() },
+        });
+        await sendMessage(msg, chat, MESSAGES.askBudget);
+        break;
 
-    case FLOW_STATES.COLLECTING_BUDGET:
-      if (!BUDGET_OPTIONS[texto]) {
-        await sendMessage(msg, chat, MESSAGES.invalidOption);
-        return;
-      }
-      updateSession(userId, {
-        state: FLOW_STATES.COLLECTING_DEADLINE,
-        data: { ...session.data, budget: BUDGET_OPTIONS[texto] },
-      });
-      await sendMessage(msg, chat, MESSAGES.askDeadline);
-      break;
+      case FLOW_STATES.COLLECTING_BUDGET:
+        if (!BUDGET_OPTIONS[texto]) {
+          await sendMessage(msg, chat, MESSAGES.invalidOption);
+          return;
+        }
+        updateSession(userId, {
+          state: FLOW_STATES.COLLECTING_DEADLINE,
+          data: { ...session.data, budget: BUDGET_OPTIONS[texto] },
+        });
+        await sendMessage(msg, chat, MESSAGES.askDeadline);
+        break;
 
-    case FLOW_STATES.COLLECTING_DEADLINE:
-      if (!DEADLINE_OPTIONS[texto]) {
-        await sendMessage(msg, chat, MESSAGES.invalidOption);
-        return;
-      }
-      let contact = null;
-      try {
-        contact = await msg.getContact();
-      } catch (e) {
-        // Ignora erro de getContact
-      }
-      const finalData = { ...session.data, deadline: DEADLINE_OPTIONS[texto] };
-      updateSession(userId, {
-        state: FLOW_STATES.FINISHED,
-        data: finalData,
-      });
-      await sendMessage(msg, chat, MESSAGES.summary(finalData));
-      await notifyAdmin(finalData, contact, msg);
-      logger.lead(finalData);
-      break;
+      case FLOW_STATES.COLLECTING_DEADLINE:
+        if (!DEADLINE_OPTIONS[texto]) {
+          await sendMessage(msg, chat, MESSAGES.invalidOption);
+          return;
+        }
+        let contact = null;
+        try {
+          contact = await msg.getContact();
+        } catch (e) {
+          // Ignora erro de getContact
+        }
+        const finalData = { ...session.data, deadline: DEADLINE_OPTIONS[texto] };
+        updateSession(userId, {
+          state: FLOW_STATES.FINISHED,
+          data: finalData,
+        });
+        await sendMessage(msg, chat, MESSAGES.summary(finalData));
+        await notifyAdmin(finalData, contact, msg);
+        logger.lead(finalData);
+        break;
 
-    case FLOW_STATES.FINISHED:
-      await sendMessage(msg, chat, `Já recebemos suas informações! 😊\n\nSe quiser começar um novo atendimento, digite *menu*.\n\nOu aguarde nosso contato em até 24 horas úteis.`);
-      break;
+      case FLOW_STATES.FINISHED:
+        await sendMessage(msg, chat, `Já recebemos suas informações! 😊\n\nSe quiser começar um novo atendimento, digite *menu*.\n\nOu aguarde nosso contato em até 24 horas úteis.`);
+        break;
 
-    default:
-      resetSession(userId);
-      await sendMessage(msg, chat, MESSAGES.welcome(getSaudacao()));
+      default:
+        resetSession(userId);
+        await sendMessage(msg, chat, MESSAGES.welcome(getSaudacao()));
+    }
+  } catch (error) {
+    stats.errors++;
+    logger.error(`Erro em handleConversation: ${error.message}`);
+    logger.error(`Stack: ${error.stack}`);
+    
+    try {
+      await sendMessage(msg, chat, "Desculpe, houve um erro ao processar sua mensagem. Tente novamente em alguns instantes ou digite *menu* para recomeçar.");
+    } catch (sendError) {
+      logger.error(`Erro ao enviar mensagem de erro: ${sendError.message}`);
+    }
   }
 }
+
 
 client.on("message_create", async (msg) => {
   try {
@@ -726,6 +867,9 @@ client.on("message", async (msg) => {
 const shutdown = async () => {
   logger.warn("Encerrando bot...");
   logger.stats();
+  if (queueProcessInterval) clearInterval(queueProcessInterval);
+  if (healthCheckInterval) clearInterval(healthCheckInterval);
+  if (statsInterval) clearInterval(statsInterval);
   await client.destroy();
   process.exit(0);
 };
@@ -735,3 +879,22 @@ process.on("SIGTERM", shutdown);
 
 logger.info("Iniciando chatbot...");
 client.initialize();
+
+// Processa a fila de mensagens a cada 10 segundos
+let queueProcessInterval = setInterval(() => {
+  processMessageQueue().catch(err => {
+    logger.error(`Erro ao processar fila de mensagens: ${err.message}`);
+  });
+}, 10000);
+
+// Verifica saúde da conexão a cada 30 segundos
+let healthCheckInterval = setInterval(() => {
+  checkHealth().catch(err => {
+    logger.error(`Erro ao verificar saúde: ${err.message}`);
+  });
+}, 30000);
+
+// Mostra estatísticas a cada 5 minutos
+let statsInterval = setInterval(() => {
+  logger.stats();
+}, 300000);
