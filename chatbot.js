@@ -369,6 +369,8 @@ const logger = {
 const client = new Client({
   authStrategy: new LocalAuth(),
   puppeteer: CONFIG.puppeteer,
+  webVersionCache: { type: "none" }, // força sempre pegar versão mais recente do WA Web
+  authTimeoutMs: 120000, // aguarda até 120s pelos seletores de auth
 });
 
 client.on("qr", (qr) => {
